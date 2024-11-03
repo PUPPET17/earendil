@@ -1,0 +1,17 @@
+server:
+  port: 8080
+
+wx:
+  config:
+    originalid: originalid
+    appid: appid
+    token: token
+    appsecret: appsecret
+
+spring:
+  redis:
+    database: 0
+    host: host
+    port: 6379
+    password: password
+    timeout: 3003
