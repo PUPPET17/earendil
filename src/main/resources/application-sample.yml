@@ -15,3 +15,9 @@ spring:
     port: 6379
     password: password
     timeout: 3003
+  devtools:
+    add-properties: false
+
+arthas:
+  telnet-port: 3658
+  http-port: 8563

@@ -22,49 +22,56 @@ import java.util.concurrent.locks.ReentrantLock;
 @DependsOn({"redisConfig","appConfig"})
 public class AccessTokenService {
     
+    @Value("${wx.config.appid}")
+    private String appId;
+    @Value("${wx.config.appsecret}")
+    private String appSecret;
     private static final Logger logger = Logger.getLogger(AccessTokenService.class.getName());
     private static final String ACCESS_TOKEN_URL = "https://api.weixin.qq.com/cgi-bin/token";
-    
     private String accessToken;
     private long expiresAt;
     private final ReentrantLock lock = new ReentrantLock();
-    
-    @Value("${wx.config.appid}")
-    private String appId;
-    
-    @Value("${wx.config.appsecret}")
-    private String appSecret;
-    
     @Resource
     private RestTemplate restTemplate;
-    
     @Resource
     private RedisUtil redisUtil;
-    
     private static ScheduledExecutorService scheduler;
+    
     @PostConstruct
     public void init() {
         if (restTemplate == null) {
             throw new IllegalStateException("RestTemplate 未初始化");
         }
         logger.info("RestTemplate 已初始化");
-        // 启动一个定时任务，提前刷新 access_token
-        scheduler = Executors.newScheduledThreadPool(1);
-        scheduler.scheduleAtFixedRate(this::refreshAccessToken, 0, 1, TimeUnit.HOURS);
+        String tokenFromRedis = (String) redisUtil.get("wechat_access_token");
+        String expiresAtStr = (String) redisUtil.get("wechat_access_token_expires_at");
+        if (expiresAtStr != null) {
+            expiresAt = Long.parseLong(expiresAtStr);
+        }
+        if (tokenFromRedis != null && System.currentTimeMillis() < expiresAt) {
+            logger.info("已从 Redis 获取到未过期的 access_token.");
+            long initialDelay = Math.max(0, expiresAt - System.currentTimeMillis() - TimeUnit.MINUTES.toMillis(5));
+            initScheduler(initialDelay);
+        } else {
+            logger.info("初始化类时未找到有效的 access_token, 已刷新.");
+            refreshAccessToken();
+            initScheduler(0);
+        }
     }
     
+    private void initScheduler(long initialDelay) {
+        if (scheduler == null || scheduler.isShutdown()) {
+            scheduler = Executors.newScheduledThreadPool(1);
+            scheduler.scheduleAtFixedRate(this::refreshAccessToken, initialDelay, TimeUnit.HOURS.toMillis(1), TimeUnit.MILLISECONDS);
+            logger.info("启动定时任务刷新 access_token，将在 " + initialDelay / 1000 + " 秒后开始运行.");
+        }
+    }
     
     /**
      * 获取 access_token
      */
     public String getAccessToken() {
-        accessToken = (String) redisUtil.get("wechat_access_token");
-        String expiresAtStr = (String) redisUtil.get("wechat_access_token_expires_at");
-        if (expiresAtStr != null) {
-            expiresAt = Long.parseLong(expiresAtStr);
-        }
-        
-        if (System.currentTimeMillis() < expiresAt) {
+        if (accessToken != null && System.currentTimeMillis() < expiresAt) {
             return accessToken;
         }
         
@@ -97,7 +104,6 @@ public class AccessTokenService {
                 int expiresIn = (int) response.get("expires_in");
                 expiresAt = System.currentTimeMillis() + (expiresIn - 300) * 1000L;  // 提前5分钟刷新
                 
-                // 同步更新到 Redis
                 redisUtil.set("wechat_access_token", accessToken, expiresIn - 300);
                 redisUtil.set("wechat_access_token_expires_at", String.valueOf(expiresAt));
                 
@@ -109,7 +115,6 @@ public class AccessTokenService {
             logger.severe("刷新 access_token 时出错: " + e.getMessage());
         }
     }
-    
     
     /**
      * 提供一个手动刷新 access_token 的方法
